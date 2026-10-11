@@ -15,6 +15,7 @@ class GreedyGridAgent:
 from collections import deque
 import heapq
 import math
+from logic_engine import KnowledgeBase
 
 # Moves the search can use: action name -> (dx, dy)
 SEARCH_MOVES = [('Up', (0, 1)), ('Down', (0, -1)), ('Left', (-1, 0)), ('Right', (1, 0))]
@@ -27,6 +28,9 @@ class SearchAgent:
         self.plan = []                 # sequence of actions still to execute
         self.active_algo = algo        # 'BFS', 'DFS', 'UCS' or 'AStar'
         self.nodes_expanded = 0        # how many nodes the last search expanded
+        self.kb = KnowledgeBase()      # Lab 07: declarative knowledge base
+        self.kb.tell_rule(['TargetVisible', 'HasDust'], 'SafeToEngage')          # Rule 1
+        self.kb.tell_rule(['SafeToEngage', 'BloodseekerMissing'], 'Retreat')     # Rule 2
 
     # ---------- Step 1.1: heuristic functions ----------
     def manhattan_distance(self, pos, goal):
@@ -53,6 +57,15 @@ class SearchAgent:
             actions.append(action)
         actions.reverse()
         return actions
+
+    # ---------- Lab 07: feasibility check using the Knowledge Base ----------
+    def _is_feasible(self, tile, tile_facts):
+        """Reachable is about walls; feasible is about logic. Ask the KB whether Retreat follows."""
+        self.kb.clear_facts()
+        for fact in tile_facts.get(tile, []):
+            self.kb.tell_fact(fact)
+        self.kb.forward_chain()
+        return 'Retreat' not in self.kb.facts
 
     # ---------- BFS: FIFO queue ----------
     def bfs_search(self, start, goal, walls, grid_size):
@@ -111,7 +124,8 @@ class SearchAgent:
         return None
 
     # ---------- Step 1.2: A* search, ordered by f(n) = g(n) + h(n) ----------
-    def astar_search(self, start_pos, goal_pos, walls, grid_size, heuristic_type='manhattan'):
+    def astar_search(self, start_pos, goal_pos, walls, grid_size, heuristic_type='manhattan', tile_facts=None):
+        tile_facts = tile_facts or {}                  # None is treated as {}
         h = self.manhattan_distance if heuristic_type == 'manhattan' else self.euclidean_distance
 
         frontier = []                                  # priority queue (heap)
@@ -131,6 +145,8 @@ class SearchAgent:
 
             for action, nxt, step_cost in self._neighbors(current_pos, walls, grid_size):
                 if nxt not in reached_states:
+                    if not self._is_feasible(nxt, tile_facts):
+                        continue                       # physically reachable but logically unsafe
                     g_new = g_cost + step_cost
                     h_new = h(nxt, goal_pos)
                     f_new = g_new + h_new
@@ -143,6 +159,10 @@ class SearchAgent:
             start = tuple(percept['agent_pos'])
             walls = set(map(tuple, percept['walls']))
             grid_size = percept['grid_size']
+            tile_facts = {
+                (1, 0): ['TargetVisible', 'HasDust', 'BloodseekerMissing'],  # deduces Retreat: blocked
+                (0, 1): ['TargetVisible', 'HasDust'],                        # SafeToEngage only: allowed
+            }
             foods = sorted(map(tuple, percept['all_food']),
                            key=lambda f: self.manhattan_distance(start, f))   # closest food first
 
@@ -155,7 +175,8 @@ class SearchAgent:
                 elif self.active_algo == 'UCS':
                     path = self.ucs_search(start, goal, walls, grid_size)
                 elif self.active_algo == 'AStar':
-                    path = self.astar_search(start, goal, walls, grid_size, heuristic_type='manhattan')
+                    path = self.astar_search(start, goal, walls, grid_size, heuristic_type='manhattan',
+                                             tile_facts=tile_facts)
                 else:
                     path = None
                 if path is not None:
